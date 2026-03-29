@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# ============================================================================
+# FlashXpress Uninstaller v3.2.0
+# ============================================================================
+# Removes all FlashXpress components from the system.
+#
+# Website: https://wp.flashxpress.cloud
+# Support:  https://buymeacoffee.com/wasimb
+# Made with love by Wasim Akram
+# ============================================================================
+
+set -euo pipefail
+
+readonly FX_VERSION="3.2.0"
+readonly FX_URL="https://wp.flashxpress.cloud"
+readonly FX_SUPPORT="https://buymeacoffee.com/wasimb"
+readonly FX_CONF_DIR="/etc/flashxpress"
+readonly FX_SITES_DIR="/var/www"
+readonly FX_BACKUP_DIR="/var/lib/flashxpress"
+
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[0;33m'
+readonly BLUE='\033[0;34m'
+readonly MAGENTA='\033[0;35m'
+readonly CYAN='\033[0;36m'
+readonly WHITE='\033[1;37m'
+readonly BOLD='\033[1m'
+readonly NC='\033[0m'
+
+fx_info()  { echo -e "${GREEN}[fx]${NC} $*"; }
+fx_warn()  { echo -e "${YELLOW}[fx warn]${NC} $*"; }
+fx_error() { echo -e "${RED}[fx error]${NC} $*" >&2; }
+fx_step()  { echo -e "${BLUE}[fx]${NC} ${BOLD}==>${NC} $*"; }
+
+fx_check_root() {
+    if [[ "${EUID}" -ne 0 ]]; then
+        fx_error "Please run this script as root or with sudo."
+        exit 1
+    fi
+}
+
+fx_print_banner() {
+    echo -e "${RED}${BOLD}"
+    echo "  ╔══════════════════════════════════════════════════════════╗"
+    echo "  ║                                                          ║"
+    echo -e "  ║  ${WHITE}  FlashXpress Uninstaller v${FX_VERSION}${RED}${BOLD}                       ║"
+    echo "  ║                                                          ║"
+    echo -e "  ║  ${WHITE}This will remove all FlashXpress components.${RED}${BOLD}          ║"
+    echo "  ║  ${WHITE}All websites and databases will be preserved.${RED}${BOLD}             ║"
+    echo "  ║                                                          ║"
+    echo "  ╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+main() {
+    fx_print_banner
+    fx_check_root
+
+    echo -e "${RED}${BOLD}  WARNING: This action cannot be undone!${NC}"
+    echo ""
+    read -rp "  Type 'UNINSTALL' to confirm: " confirm
+
+    if [[ "${confirm}" != "UNINSTALL" ]]; then
+        fx_info "Uninstallation cancelled."
+        exit 0
+    fi
+
+    echo ""
+
+    # Ask about removing core packages
+    local remove_packages="n"
+    read -rp "  Remove NGINX, MariaDB, PHP, Redis packages? [y/N]: " remove_packages
+
+    # 1. Remove fx CLI tool
+    fx_step "Removing fx CLI tool..."
+    rm -f /usr/local/bin/fx
+
+    # 2. Remove Fail2Ban configuration
+    fx_step "Removing Fail2Ban configuration..."
+    rm -f /etc/fail2ban/filter.d/nginx-limit-req.conf
+    rm -f /etc/fail2ban/jail.local
+    systemctl restart fail2ban 2>/dev/null || true
+
+    # 3. Remove FlashXpress configs and data
+    fx_step "Removing FlashXpress configuration..."
+    rm -rf "${FX_CONF_DIR}"
+    rm -rf "${FX_BACKUP_DIR}"
+    rm -rf /var/log/flashxpress
+
+    # 4. Remove NGINX FastCGI cache
+    fx_step "Cleaning NGINX cache..."
+    rm -rf /var/cache/nginx/fastcgi
+
+    # 5. Remove UFW custom profiles
+    fx_step "Removing UFW custom profiles..."
+    # UFW application profiles are system-managed; skip removal to avoid breaking other services
+
+    if [[ "${remove_packages}" == "y" || "${remove_packages}" == "Y" ]]; then
+        echo ""
+        fx_warn "Removing installed packages..."
+
+        # Stop services first
+        systemctl stop nginx 2>/dev/null || true
+        systemctl stop mariadb 2>/dev/null || true
+        systemctl stop redis-server 2>/dev/null || true
+        for ver in 8.4 8.3 8.2 8.1; do
+            systemctl stop "php${ver}-fpm" 2>/dev/null || true
+        done
+        systemctl stop fail2ban 2>/dev/null || true
+
+        # Remove packages
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get remove -y --purge \
+            nginx nginx-common nginx-full \
+            mariadb-server mariadb-client \
+            redis-server \
+            fail2ban \
+            certbot python3-certbot-nginx \
+            2>/dev/null || true
+
+        # Remove PHP packages
+        for ver in 8.4 8.3 8.2 8.1; do
+            apt-get remove -y --purge "php${ver}-*" 2>/dev/null || true
+        done
+        apt-get remove -y --purge php-common 2>/dev/null || true
+
+        # Remove WP-CLI
+        rm -f /usr/local/bin/wp
+
+        # Remove ondrej/php PPA
+        add-apt-repository -y --remove ppa:ondrej/php 2>/dev/null || true
+
+        # Remove MariaDB PPA
+        rm -f /etc/apt/sources.list.d/mariadb.list
+        rm -f /usr/share/keyrings/mariadb-keyring.gpg
+
+        # Autoremove
+        apt-get autoremove -y
+        apt-get clean
+
+        fx_info "All packages removed."
+    else
+        fx_info "Core packages (NGINX, MariaDB, PHP, Redis) were preserved."
+    fi
+
+    echo ""
+    echo -e "${GREEN}"
+    echo "  ╔══════════════════════════════════════════════════════════╗"
+    echo "  ║                                                          ║"
+    echo -e "  ║  ${BOLD}${WHITE}  FlashXpress has been uninstalled.${GREEN}                   ║"
+    echo "  ║                                                          ║"
+    echo "  ║  ${CYAN}Thank you for using FlashXpress!${GREEN}                   ║"
+    echo "  ║                                                          ║"
+    echo -e "  ║  ${YELLOW}${FX_URL}${GREEN}                      ║"
+    echo -e "  ║  ${YELLOW}${FX_SUPPORT}${GREEN}         ║"
+    echo "  ║                                                          ║"
+    echo -e "  ║  Made with ${RED}❤${GREEN} by Wasim Akram                            ║"
+    echo "  ╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    echo ""
+}
+
+main "$@"
